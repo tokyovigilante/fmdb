@@ -8,3 +8,4 @@ fmdb.xcodeproj/*.mode1v3
 fmdb.xcodeproj/project.xcworkspace
 .swiftpm
 .build
+Package.resolved

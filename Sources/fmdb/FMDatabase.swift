@@ -4,7 +4,7 @@ import Logging
 
 let logger = Logger(label: "com.testtoast.fmdb")
 
-class FMDatabase {
+public class FMDatabase {
 
     // MARK: - FMDatabase Private Extension
     private var _db: OpaquePointer? = nil
@@ -14,12 +14,13 @@ class FMDatabase {
     private let _openFunctions = NSMutableSet()
     private var _dateFormat: DateFormatter? = nil
 
-    let databaseURL: URL
+    public let databaseURL: URL
 
-    var logsErrors = true
-    var crashOnErrors = false
-    var maxBusyRetryTimeInterval = 2
-    private (set) var isOpen = false
+    public var logsErrors = true
+    public var crashOnErrors = false
+    public var maxBusyRetryTimeInterval = 2
+
+    private (set) public var isOpen = false
 /*
 
 - (FMResultSet * _Nullable)executeQuery:(NSString *)sql withArgumentsInArray:(NSArray * _Nullable)arrayArgs orDictionary:(NSDictionary * _Nullable)dictionaryArgs orVAList:(va_list)args shouldBind:(BOOL)shouldBind;
@@ -68,7 +69,7 @@ NS_ASSUME_NONNULL_END
 }
 
     */
-    init (url: URL) {
+    public init (url: URL) {
         assert(sqlite3_threadsafe() != 0, "SQLite is not threadsafe, aborting")
         databaseURL = url
 }
@@ -161,9 +162,9 @@ NS_ASSUME_NONNULL_END
     return sqlite3_limit(_db, type, newLimit);
 }
 */
-// MARK: Open and close database
+    // MARK: Open and close database
 
-    func open () -> Bool {
+    public func open () -> Bool {
 
         if isOpen {
             return true
@@ -228,7 +229,7 @@ NS_ASSUME_NONNULL_END
 #endif
 }
 */
-    func close () -> Bool {
+    public func close () -> Bool {
 /*
         [self clearCachedStatements];
         [self closeOpenResultSets];
