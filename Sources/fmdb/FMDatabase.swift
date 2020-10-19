@@ -175,7 +175,11 @@ NS_ASSUME_NONNULL_END
             _ = close()
         }
 
-        let err = sqlite3_open_v2(databaseURL.absoluteString, &_db, SQLITE_OPEN_URI, nil)
+        let err = sqlite3_open_v2(databaseURL.absoluteString, &_db,
+                SQLITE_OPEN_READWRITE |
+                SQLITE_OPEN_CREATE |
+                SQLITE_OPEN_URI,
+                nil)
         if err != SQLITE_OK {
             logger.error("error opening!: \(err)")
             return false
