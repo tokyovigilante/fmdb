@@ -4,6 +4,9 @@ import Logging
 
 let logger = Logger(label: "com.testtoast.fmdb")
 
+let SQLITE_STATIC = unsafeBitCast(0, to: sqlite3_destructor_type.self)
+let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
 /**
 Enumeration used in checkpoint methods.
 */
@@ -14,16 +17,20 @@ public enum FMDBCheckpointMode: Int {
     case truncate = 3  // SQLITE_CHECKPOINT_TRUNCATE
 }
 
-public enum SQLiteError: Error, LocalizedError {
-    case database(message: String)
+struct Weak<T: AnyObject> {
 
-    public var errorDescription: String? {
-        switch self {
-        case .database (let message):
-            return "\(String(describing: self)): \(message)"
-        }
-    }
+    weak var value : T?
+
 }
+
+extension Array where Element == Weak<AnyObject> {
+
+    mutating func reap () {
+        self = self.filter { nil != $0.value }
+    }
+
+}
+
 
 
 /** A SQLite ([https://sqlite.org/](https://sqlite.org/)) Objective-C wrapper.
@@ -96,9 +103,8 @@ public class FMDatabase {
 
     private var _isExecutingStatement = false
     fileprivate var _startBusyRetryTime: TimeInterval = 0
-    private var _openResultSets = Set<FMResultSet>()
+    private var _openResultSets = [Weak<FMResultSet>]()
     //private var _openFunctions = Set()
-    private var _dateFormat: DateFormatter? = nil
 
     private var sqlitePath: String? {
 
@@ -108,10 +114,23 @@ public class FMDatabase {
         return url.absoluteString
     }
 
-    public var logsErrors = true
+    ///-----------------
+    /// @name Properties
+    ///-----------------
+
+    /** Whether should trace execution */
+    public var traceExecution = false
+
+    /** Whether checked out or not */
+    public var checkedOut = false
+
+    /** Crash on errors */
     public var crashOnErrors = false
 
-    private (set) public var cachedStatements = [String: NSMutableSet]()
+    /** Logs errors */
+    public var logsErrors = true
+
+    private (set) public var cachedStatements = [String: Set<FMStatement>]()
 
     public init (url: URL?) {
         assert(sqlite3_threadsafe() != 0, "SQLite is not threadsafe, aborting")
@@ -172,7 +191,11 @@ public class FMDatabase {
 
         // if we previously tried to open and it failed, make sure to close it before we try again
         if _db != nil {
-            _ = close()
+            do {
+                try close()
+            } catch {
+                logger.warning("\(error.localizedDescription)")
+            }
         }
 
         let err = sqlite3_open_v2(databaseURL?.absoluteString, &_db, flags, vfs)
@@ -191,45 +214,42 @@ public class FMDatabase {
     }
 
 
-    public func close () -> Bool {
+    public func close () throws {
 
         clearCachedStatements()
         closeOpenResultSets()
 
-        /*    if (!_db) {
-                return YES;
-            }
+        if _db == nil {
+            return
+        }
 
-            int  rc;
-            BOOL retry;
-            BOOL triedFinalizingOpenStatements = NO;
+        defer {
+            _db = nil
+            isOpen = false
+        }
 
-            do {
-                retry   = NO;
-                rc      = sqlite3_close(_db);
-                if (SQLITE_BUSY == rc || SQLITE_LOCKED == rc) {
-                    if (!triedFinalizingOpenStatements) {
-                        triedFinalizingOpenStatements = YES;
-                        sqlite3_stmt *pStmt;
-                        while ((pStmt = sqlite3_next_stmt(_db, nil)) !=0) {
-                            NSLog(@"Closing leaked statement");
-                            sqlite3_finalize(pStmt);
-                            pStmt = 0x00;
-                            retry = YES;
-                        }
+        var rc: Int32
+        var retry: Bool
+        var triedFinalizingOpenStatements = false
+
+        repeat {
+            retry = false
+            rc = sqlite3_close(_db)
+            if rc == SQLITE_BUSY || rc == SQLITE_LOCKED {
+                if !triedFinalizingOpenStatements {
+                    triedFinalizingOpenStatements = true
+                    while let pStmt = sqlite3_next_stmt(_db, nil) {
+                        logger.warning("Closing leaked statement")
+                        sqlite3_finalize(pStmt)
+                        retry = true
                     }
                 }
-                else if (SQLITE_OK != rc) {
-                    NSLog(@"error closing!: %d", rc);
-                }
             }
-            while (retry);
-
-            _db = nil;
-            _isOpen = false;
-
-            return YES;*/
-        return true
+            else if rc != SQLITE_OK {
+                throw SQLiteError.database(message: "error closing!: \(rc)")
+            }
+        }
+        while retry
     }
 
     /** Test to see if we have a good connection to the database.
@@ -243,7 +263,35 @@ public class FMDatabase {
      @return @c YES if everything succeeds, @c NO on failure.
      */
     var goodConnection: Bool {
-        return true
+
+        if !isOpen {
+            return false
+        }
+/*
+        #ifdef SQLCIPHER_CRYPTO
+            // Starting with Xcode8 / iOS 10 we check to make sure we really are linked with
+            // SQLCipher because there is no longer a linker error if we accidently link
+            // with unencrypted sqlite library.
+            //
+            // https://discuss.zetetic.net/t/important-advisory-sqlcipher-with-xcode-8-and-new-sdks/1688
+
+            FMResultSet *rs = [self executeQuery:@"PRAGMA cipher_version"];
+
+            if ([rs next]) {
+                NSLog(@"SQLCipher version: %@", rs.resultDictionary[@"cipher_version"]);
+
+                [rs close];
+                return YES;
+            }
+        #else*/
+        do {
+            let rs = try execute(query: "select name from sqlite_master where type='table'")
+            rs.close()
+            return true
+        } catch {
+            logger.error("\(error.localizedDescription)")
+        }
+        return false
     }
 
 
@@ -253,7 +301,7 @@ public class FMDatabase {
 
     /** Execute single update statement
 
-    This method executes a single SQL update statement (i.e. any SQL that does not return results, such as @c UPDATE , @c INSERT , or @c DELETE . This method employs [`sqlite3_prepare_v2`](https://sqlite.org/c3ref/prepare.html) and [`sqlite3_bind`](https://sqlite.org/c3ref/bind_blob.html) binding any `?` placeholders in the SQL with the optional list of parameters.
+    This method executes a single SQL update statement (i.e. any SQL that does not return results, such as @c UPDATE , @c INSERT , or @c DELETE . This method employs [`sqlite3_prepare_v2`](https://sqlite.org/c3ref/prepare.html) and [`sqlite_step`](https://sqlite.org/c3ref/step.html) to perform the update. Unlike the other @c executeUpdate methods, this uses printf-style formatters (e.g. `%s`, `%d`, etc.) to build the SQL.
 
     The optional values provided to this method should be objects (e.g. @c NSString , @c NSNumber , @c NSNull , @c NSDate , and @c NSData  objects), not fundamental data types (e.g. @c int , @c long , @c NSInteger , etc.). This method automatically handles the aforementioned object types, and all other object types will be interpreted as text values using the object's @c description  method.
 
@@ -261,26 +309,7 @@ public class FMDatabase {
 
     @param arguments A @c NSArray  of objects to be used when binding values to the `?` placeholders in the SQL statement.
 
-    @return @c YES upon success; @c NO upon failure. If failed, you can call @c lastError , @c lastErrorCode , or @c lastErrorMessage  for diagnostic information regarding the failure.
-    beginTransaction
-    @see executeUpdate:values:error:
-    @see lastError
-    @see lastErrorCode
-    @see lastErrorMessage
-    */
-    public func execute (update sql: String, arguments: [Any]? = nil) throws {
-
-    }
-
-    /** Execute single update statement
-
-    This method executes a single SQL update statement (i.e. any SQL that does not return results, such as @c UPDATE , @c INSERT , or @c DELETE . This method employs [`sqlite3_prepare_v2`](https://sqlite.org/c3ref/prepare.html) and [`sqlite_step`](https://sqlite.org/c3ref/step.html) to perform the update. Unlike the other @c executeUpdate methods, this uses printf-style formatters (e.g. `%s`, `%d`, etc.) to build the SQL.
-
-    The optional values provided to this method should be objects (e.g. @c NSString , @c NSNumber , @c NSNull , @c NSDate , and @c NSData  objects), not fundamental data types (e.g. @c int , @c long , @c NSInteger , etc.). This method automatically handles the aforementioned object types, and all other object types will be interpreted as text values using the object's @c description  method.
-
-    @param sql The SQL to be performed, with optional `?` placeholders.
-
-    @param arguments A @c NSDictionary of objects keyed by column names that will be used when binding values to the `?` placeholders in the SQL statement.
+    @param dictionary A @c NSDictionary of objects keyed by column names that will be used when binding values to the `?` placeholders in the SQL statement.
 
     @return @c YES upon success; @c NO upon failure. If failed, you can call @c lastError , @c lastErrorCode , or @c lastErrorMessage  for diagnostic information regarding the failure.
 
@@ -288,8 +317,9 @@ public class FMDatabase {
     @see lastErrorCode
     @see lastErrorMessage
     */
-    public func execute (update sql: String, parameterDictionary: [String: Any]) throws {
-
+    public func execute (update sql: String, arguments: [Any?]? = nil, dictionary paramDict: [String: Any?]? = nil) throws {
+        let rs = try execute(query: sql, arguments: arguments, dictionary: paramDict, shouldBind: true)
+        try rs.stepInternal()
     }
 
     /** Execute multiple SQL statements
@@ -369,43 +399,23 @@ public class FMDatabase {
 
     @param sql The SELECT statement to be performed, with optional `?` placeholders, followed by optional parameters to bind to `?` placeholders in the SQL statement. These should be Objective-C objects (e.g. @c NSString , @c NSNumber , etc.), not fundamental C data types (e.g. @c int , etc.).
 
-    @return A @c FMResultSet  for the result set upon success; @c nil  upon failure. If failed, you can call @c lastError , @c lastErrorCode , or @c lastErrorMessage  for diagnostic information regarding the failure.
-
-    @see FMResultSet
-    @see [`FMResultSet next`](<[FMResultSet next]>)
-    @see [`sqlite3_bind`](https://sqlite.org/c3ref/bind_blob.html)
-
-    @note You cannot use this method from Swift due to incompatibilities between Swift and Objective-C variadic implementations. Consider using `<executeQuery:values:>` instead.
-    */
-    public func execute (query sql: String, arguments: [Any]? = nil) throws -> FMResultSet {
-        return FMResultSet()
-    }
-
-
-    /** Execute select statement
-
-    Executing queries returns an @c FMResultSet  object if successful, and @c nil  upon failure.  Like executing updates, there is a variant that accepts an `NSError **` parameter.  Otherwise you should use the @c lastErrorMessage  and @c lastErrorMessage  methods to determine why a query failed.
-
-    In order to iterate through the results of your query, you use a `while()` loop.  You also need to "step" (via `<[FMResultSet next]>`) from one record to the other.
-
-    @param sql The SELECT statement to be performed, with optional `?` placeholders.
-
     @param arguments A @c NSDictionary of objects keyed by column names that will be used when binding values to the `?` placeholders in the SQL statement.
 
     @return A @c FMResultSet  for the result set upon success; @c nil  upon failure. If failed, you can call @c lastError , @c lastErrorCode , or @c lastErrorMessage  for diagnostic information regarding the failure.
 
     @see FMResultSet
     @see [`FMResultSet next`](<[FMResultSet next]>)
+
     */
-    public func execute (query sql: String, parameterDictionary: [String: Any]) throws -> FMResultSet {
-        return FMResultSet()
+    public func execute (query sql: String, arguments: [Any?]? = nil, paramDict: [String: Any?]? = nil) throws -> FMResultSet {
+        throw SQLiteError.database(message: "Unimplemented")
     }
 
     /// Prepare SQL statement.
     ///
     /// @param sql SQL statement to prepare, generally with `?` placeholders.
-    public func prepare (sql: String) -> FMResultSet {
-        return FMResultSet()
+    public func prepare (sql: String) throws -> FMResultSet {
+        throw SQLiteError.database(message: "Unimplemented")
     }
 
     ///-------------------
@@ -513,78 +523,46 @@ public class FMDatabase {
 
     /** Clear cached statements */
 
-        // MARK: Cached statements
-    public func clearCachedStatements () {
+    private func clearCachedStatements () {
     // FIXME: needs work
             for statements in cachedStatements.enumerated() {
                 for statement in statements.element.value {
-                    (statement as! FMStatement).close()
+                    statement.close()
                 }
             }
             cachedStatements.removeAll()
         }
 
-        /*
-        - (FMStatement*)cachedStatementForQuery:(NSString*)query {
+    private func cachedStatement (for query: String) -> FMStatement? {
 
-            NSMutableSet* statements = [_cachedStatements objectForKey:query];
-
-            return [[statements objectsPassingTest:^BOOL(FMStatement* statement, BOOL *stop) {
-
-                *stop = ![statement inUse];
-                return *stop;
-
-            }] anyObject];
+        guard let statements = cachedStatements[query] else {
+            return nil
         }
 
+        return statements.filter { !$0.inUse }.randomElement()
+    }
 
-        - (void)setCachedStatement:(FMStatement*)statement forQuery:(NSString*)query {
-            NSParameterAssert(query);
-            if (!query) {
-                NSLog(@"API misuse, -[FMDatabase setCachedStatement:forQuery:] query must not be nil");
-                return;
-            }
+    private func cache (statement: FMStatement, for query: String) {
 
-            query = [query copy]; // in case we got handed in a mutable string...
-            [statement setQuery:query];
+        statement.query = query
 
-            NSMutableSet* statements = [_cachedStatements objectForKey:query];
-            if (!statements) {
-                statements = [NSMutableSet set];
-            }
+        var statements = cachedStatements[query] ?? Set()
 
-            [statements addObject:statement];
+        statements.insert(statement)
 
-            [_cachedStatements setObject:statements forKey:query];
+        cachedStatements[query] = statements
+    }
 
-            FMDBRelease(query);
-        }
-        */
     /** Close all open result sets */
     private func closeOpenResultSets () {
 // FIXME: needs work
-        /*for
-        //Copy the set so we don't get mutation errors
-        NSSet *openSetCopy = FMDBReturnAutoreleased([_openResultSets copy]);
-
-        for (NSValue *rsInWrappedInATastyValueMeal in openSetCopy) {
-            FMResultSet *rs = (FMResultSet *)[rsInWrappedInATastyValueMeal pointerValue];
-
-            [rs setParentDB:nil];
-            [rs close];
-
-            [_openResultSets removeObject:rsInWrappedInATastyValueMeal];
-        }*/
+        while !_openResultSets.isEmpty {
+            if let rs = _openResultSets.popLast()?.value {
+                rs.parentDB = nil
+                rs.close()
+            }
+        }
     }
-
-    /*
-    - (void)resultSetDidClose:(FMResultSet *)resultSet {
-        NSValue *setValue = [NSValue valueWithNonretainedObject:resultSet];
-
-        [_openResultSets removeObject:setValue];
-    }
-    */
-
     /** Whether database has any open result sets
 
     @return @c YES if there are open result sets; @c NO if not.
@@ -687,7 +665,9 @@ public class FMDatabase {
      @see lastError
 
     */
-    private (set) public var lastErrorMessage: String?
+    public var lastErrorMessage: String? {
+        return String(cString: sqlite3_errmsg(_db), encoding: .utf8)
+    }
 
     /** Last error code
 
@@ -700,7 +680,9 @@ public class FMDatabase {
     @see lastError
 
     */
-    private (set) public var lastErrorCode: Int32?
+    public var lastErrorCode: Int32 {
+        return sqlite3_errcode(_db)
+    }
 
 
     /** Last extended error code
@@ -716,7 +698,9 @@ public class FMDatabase {
     @see lastError
 
     */
-    private (set) public var varlastExtendedErrorCode: Int32?
+    public var varlastExtendedErrorCode: Int32 {
+        return sqlite3_errcode(_db)
+    }
 
     /** Had error
 
@@ -727,7 +711,10 @@ public class FMDatabase {
     @see lastErrorMessage
 
     */
-    private (set) public var hadError = false
+    public var hadError: Bool {
+        let lastErrCode = lastErrorCode
+        return lastErrCode > SQLITE_OK && lastErrCode < SQLITE_ROW
+    }
 
     /** Last error
 
@@ -738,7 +725,14 @@ public class FMDatabase {
 
     */
 
-    private (set) public var lastError: Error?
+
+
+    public var lastError: Error? {
+        if let message = lastErrorMessage {
+            return SQLiteError.database(message: "FMDatabase: \(lastErrorCode): \(message)")
+        }
+        return nil
+    }
 
     public var maxBusyRetryTimeInterval: TimeInterval = 2 {
         didSet {
@@ -1091,180 +1085,27 @@ typedef NS_ENUM(int, SqliteValueType) {
  @see makeFunctionNamed:arguments:block:
  */
 - (void)resultErrorTooBigInContext:(void *)context NS_SWIFT_NAME(resultErrorTooBig(context:));
-
-///---------------------
-/// @name Date formatter
-///---------------------
-
-/** Generate an @c NSDateFormatter  that won't be broken by permutations of timezones or locales.
-
- Use this method to generate values to set the dateFormat property.
-
- Example:
-
-@code
-myDB.dateFormat = [FMDatabase storeableDateFormat:@"yyyy-MM-dd HH:mm:ss"];
-@endcode
-
- @param format A valid NSDateFormatter format string.
-
- @return A @c NSDateFormatter  that can be used for converting dates to strings and vice versa.
-
- @see hasDateFormatter
- @see setDateFormat:
- @see dateFromString:
- @see stringFromDate:
- @see storeableDateFormat:
-
- @warning Note that @c NSDateFormatter  is not thread-safe, so the formatter generated by this method should be assigned to only one FMDB instance and should not be used for other purposes.
-
- */
-
-+ (NSDateFormatter *)storeableDateFormat:(NSString *)format;
-
-/** Test whether the database has a date formatter assigned.
-
- @return @c YES if there is a date formatter; @c NO if not.
-
- @see hasDateFormatter
- @see setDateFormat:
- @see dateFromString:
- @see stringFromDate:
- @see storeableDateFormat:
- */
-
-- (BOOL)hasDateFormatter;
-
-/** Set to a date formatter to use string dates with sqlite instead of the default UNIX timestamps.
-
- @param format Set to nil to use UNIX timestamps. Defaults to nil. Should be set using a formatter generated using @c FMDatabase:storeableDateFormat .
-
- @see hasDateFormatter
- @see setDateFormat:
- @see dateFromString:
- @see stringFromDate:
- @see storeableDateFormat:
-
- @warning Note there is no direct getter for the @c NSDateFormatter , and you should not use the formatter you pass to FMDB for other purposes, as @c NSDateFormatter  is not thread-safe.
- */
-
-- (void)setDateFormat:(NSDateFormatter * _Nullable)format;
-
-/** Convert the supplied NSString to NSDate, using the current database formatter.
-
- @param s @c NSString  to convert to @c NSDate .
-
- @return The @c NSDate  object; or @c nil  if no formatter is set.
-
- @see hasDateFormatter
- @see setDateFormat:
- @see dateFromString:
- @see stringFromDate:
- @see storeableDateFormat:
- */
-
-- (NSDate * _Nullable)dateFromString:(NSString *)s;
-
-/** Convert the supplied NSDate to NSString, using the current database formatter.
-
- @param date @c NSDate  of date to convert to @c NSString .
-
- @return The @c NSString  representation of the date; @c nil  if no formatter is set.
-
- @see hasDateFormatter
- @see setDateFormat:
- @see dateFromString:
- @see stringFromDate:
- @see storeableDateFormat:
- */
-
-- (NSString * _Nullable)stringFromDate:(NSDate *)date;
-
-@end
-
-
-/** Objective-C wrapper for @c sqlite3_stmt
-
- This is a wrapper for a SQLite @c sqlite3_stmt . Generally when using FMDB you will not need to interact directly with `FMStatement`, but rather with @c FMDatabase  and @c FMResultSet  only.
-
- See also
-
- - @c FMDatabase
- - @c FMResultSet
- - [@c sqlite3_stmt ](https://sqlite.org/c3ref/stmt.html)
- */
-
-@interface FMStatement : NSObject {
-    void *_statement;
-    NSString *_query;
-    long _useCount;
-    BOOL _inUse;
-}
-
-///-----------------
-/// @name Properties
-///-----------------
-
-/** Usage count */
-
-@property (atomic, assign) long useCount;
-
-/** SQL statement */
-
-@property (atomic, retain) NSString *query;
-
-/** SQLite sqlite3_stmt
-
- @see [@c sqlite3_stmt ](https://sqlite.org/c3ref/stmt.html)
- */
-
-@property (atomic, assign) void *statement;
-
-/** Indication of whether the statement is in use */
-
-@property (atomic, assign) BOOL inUse;
-
-///----------------------------
-/// @name Closing and Resetting
-///----------------------------
-
-/** Close statement */
-
-- (void)close;
-
-/** Reset statement */
-
-- (void)reset;
-
-@end
-
-#pragma clang diagnostic pop
-
-NS_ASSUME_NONNULL_END
-
 */
+    ///---------------------
+    /// @name Date formatter
+    ///---------------------
 
+
+    /** Set a date formatter to use string dates with sqlite instead of the default UNIX timestamps.
+
+    @param format Set to nil to use UNIX timestamps. Defaults to nil. Should be set using a formatter generated using @c FMDatabase:storeableDateFormat .
+
+    @see hasDateFormatter
+    @see setDateFormat:
+    @see dateFromString:
+    @see stringFromDate:
+    @see storeableDateFormat:
+
+    @warning Note there is no direct getter for the @c NSDateFormatter , and you should not use the formatter you pass to FMDB for other purposes, as @c NSDateFormatter  is not thread-safe.
+    */
+    public var dateFormatter: DateFormatter? = nil
 
 /*
-
-
-// we no longer make busyRetryTimeout public
-// but for folks who don't bother noticing that the interface to FMDatabase changed,
-// we'll still implement the method so they don't get suprise crashes
-- (int)busyRetryTimeout {
-    NSLog(@"%s:%d", __FUNCTION__, __LINE__);
-    NSLog(@"FMDB: busyRetryTimeout no longer works, please use maxBusyRetryTimeInterval");
-    return -1;
-}
-
-- (void)setBusyRetryTimeout:(int)i {
-#pragma unused(i)
-    NSLog(@"%s:%d", __FUNCTION__, __LINE__);
-    NSLog(@"FMDB: setBusyRetryTimeout does nothing, please use setMaxBusyRetryTimeInterval:");
-}
-
-
-
 
 #pragma mark Key routines
 
@@ -1326,118 +1167,30 @@ NS_ASSUME_NONNULL_END
     return result;
 }
 
+*/
+    func warnInUse () {
+        logger.warning("Database is currently in use.")
 
-- (BOOL)hasDateFormatter {
-    return _dateFormat != nil;
-}
-
-- (void)setDateFormat:(NSDateFormatter *)format {
-    FMDBAutorelease(_dateFormat);
-    _dateFormat = FMDBReturnRetained(format);
-}
-
-- (NSDate *)dateFromString:(NSString *)s {
-    return [_dateFormat dateFromString:s];
-}
-
-- (NSString *)stringFromDate:(NSDate *)date {
-    return [_dateFormat stringFromDate:date];
-}
-
-#pragma mark State of database
-
-- (BOOL)goodConnection {
-
-    if (!_isOpen) {
-        return NO;
-    }
-
-#ifdef SQLCIPHER_CRYPTO
-    // Starting with Xcode8 / iOS 10 we check to make sure we really are linked with
-    // SQLCipher because there is no longer a linker error if we accidently link
-    // with unencrypted sqlite library.
-    //
-    // https://discuss.zetetic.net/t/important-advisory-sqlcipher-with-xcode-8-and-new-sdks/1688
-
-    FMResultSet *rs = [self executeQuery:@"PRAGMA cipher_version"];
-
-    if ([rs next]) {
-        NSLog(@"SQLCipher version: %@", rs.resultDictionary[@"cipher_version"]);
-
-        [rs close];
-        return YES;
-    }
-#else
-    FMResultSet *rs = [self executeQuery:@"select name from sqlite_master where type='table'"];
-
-    if (rs) {
-        [rs close];
-        return YES;
-    }
-#endif
-
-    return NO;
-}
-
-- (void)warnInUse {
-    NSLog(@"The FMDatabase %@ is currently in use.", self);
-
-#ifndef NS_BLOCK_ASSERTIONS
-    if (_crashOnErrors) {
-        NSAssert(false, @"The FMDatabase %@ is currently in use.", self);
-        abort();
-    }
-#endif
-}
-
-- (BOOL)databaseExists {
-
-    if (!_isOpen) {
-
-        NSLog(@"The FMDatabase %@ is not open.", self);
-
-#ifndef NS_BLOCK_ASSERTIONS
-        if (_crashOnErrors) {
-            NSAssert(false, @"The FMDatabase %@ is not open.", self);
-            abort();
+        if crashOnErrors {
+            assert(false, "Database is currently in use.")
+            abort()
         }
-#endif
-
-        return NO;
     }
 
-    return YES;
-}
+    var databaseExists: Bool {
 
-#pragma mark Error routines
+        if !isOpen {
+            logger.info("The FMDatabase %@ is not open.")
+            if crashOnErrors {
+                assert(false, "The FMDatabase %@ is not open.")
+                abort()
+            }
+            return false
+        }
+        return true
+    }
+/*
 
-- (NSString *)lastErrorMessage {
-    return [NSString stringWithUTF8String:sqlite3_errmsg(_db)];
-}
-
-- (BOOL)hadError {
-    int lastErrCode = [self lastErrorCode];
-
-    return (lastErrCode > SQLITE_OK && lastErrCode < SQLITE_ROW);
-}
-
-- (int)lastErrorCode {
-    return sqlite3_errcode(_db);
-}
-
-- (int)lastExtendedErrorCode {
-    return sqlite3_extended_errcode(_db);
-}
-
-- (NSError*)errorWithMessage:(NSString *)message {
-    NSDictionary* errorMessage = [NSDictionary dictionaryWithObject:message forKey:NSLocalizedDescriptionKey];
-
-    return [NSError errorWithDomain:@"FMDatabase" code:sqlite3_errcode(_db) userInfo:errorMessage];
-}
-
-- (NSError*)lastError {
-    return [self errorWithMessage:[self lastErrorMessage]];
-}
 
 #pragma mark Update information routines
 
@@ -1471,80 +1224,57 @@ NS_ASSUME_NONNULL_END
 
     return ret;
 }
+*/
+// MARK: SQL manipulation
 
-#pragma mark SQL manipulation
+    func bind (object: Any?, to idx: Int32, in pStmt: OpaquePointer?) -> Int32 {
 
-- (int)bindObject:(id)obj toColumn:(int)idx inStatement:(sqlite3_stmt*)pStmt {
+        if object == nil {
+            return sqlite3_bind_null(pStmt, idx)
+        }
 
-    if ((!obj) || ((NSNull *)obj == [NSNull null])) {
-        return sqlite3_bind_null(pStmt, idx);
+        switch object {
+        case let data as Data:
+            return data.withUnsafeBytes {
+                sqlite3_bind_blob(pStmt, idx, $0.baseAddress, Int32(data.count), SQLITE_TRANSIENT)
+            }
+        case let date as Date:
+            if let formatter = dateFormatter {
+                return sqlite3_bind_text(pStmt, idx, formatter.string(from: date), -1, SQLITE_TRANSIENT)
+            } else {
+                return sqlite3_bind_double(pStmt, idx, date.timeIntervalSince1970)
+            }
+        case let number as Int8:
+            return sqlite3_bind_int(pStmt, idx, Int32(number))
+        case let number as UInt8:
+            return sqlite3_bind_int(pStmt, idx, Int32(number))
+        case let number as Int16:
+            return sqlite3_bind_int(pStmt, idx, Int32(number))
+        case let number as UInt16:
+            return sqlite3_bind_int(pStmt, idx, Int32(number))
+        case let number as Int32:
+            return sqlite3_bind_int(pStmt, idx, number)
+        case let number as UInt32:
+            return sqlite3_bind_int(pStmt, idx, Int32(number))
+        case let number as Int64:
+            return sqlite3_bind_int64(pStmt, idx, number)
+        case let number as UInt64:
+            return sqlite3_bind_int64(pStmt, idx, Int64(number))
+        case let number as Float:
+            return sqlite3_bind_double(pStmt, idx, Double(number))
+        case let number as Double:
+            return sqlite3_bind_double(pStmt, idx, number)
+        case let number as Bool:
+            return sqlite3_bind_int(pStmt, idx, number ? 1 : 0)
+        case let string as String:
+            return sqlite3_bind_text(pStmt, idx, string, -1, SQLITE_TRANSIENT)
+        default:
+            logger.warning("Unknown object \(String(describing: object))")
+        }
+        return sqlite3_bind_text(pStmt, idx, String(describing: object), -1, SQLITE_TRANSIENT)
     }
 
-    // FIXME - someday check the return codes on these binds.
-    else if ([obj isKindOfClass:[NSData class]]) {
-        const void *bytes = [obj bytes];
-        if (!bytes) {
-            // it's an empty NSData object, aka [NSData data].
-            // Don't pass a NULL pointer, or sqlite will bind a SQL null instead of a blob.
-            bytes = "";
-        }
-        return sqlite3_bind_blob(pStmt, idx, bytes, (int)[obj length], SQLITE_TRANSIENT);
-    }
-    else if ([obj isKindOfClass:[NSDate class]]) {
-        if (self.hasDateFormatter)
-            return sqlite3_bind_text(pStmt, idx, [[self stringFromDate:obj] UTF8String], -1, SQLITE_TRANSIENT);
-        else
-            return sqlite3_bind_double(pStmt, idx, [obj timeIntervalSince1970]);
-    }
-    else if ([obj isKindOfClass:[NSNumber class]]) {
-
-        if (strcmp([obj objCType], @encode(char)) == 0) {
-            return sqlite3_bind_int(pStmt, idx, [obj charValue]);
-        }
-        else if (strcmp([obj objCType], @encode(unsigned char)) == 0) {
-            return sqlite3_bind_int(pStmt, idx, [obj unsignedCharValue]);
-        }
-        else if (strcmp([obj objCType], @encode(short)) == 0) {
-            return sqlite3_bind_int(pStmt, idx, [obj shortValue]);
-        }
-        else if (strcmp([obj objCType], @encode(unsigned short)) == 0) {
-            return sqlite3_bind_int(pStmt, idx, [obj unsignedShortValue]);
-        }
-        else if (strcmp([obj objCType], @encode(int)) == 0) {
-            return sqlite3_bind_int(pStmt, idx, [obj intValue]);
-        }
-        else if (strcmp([obj objCType], @encode(unsigned int)) == 0) {
-            return sqlite3_bind_int64(pStmt, idx, (long long)[obj unsignedIntValue]);
-        }
-        else if (strcmp([obj objCType], @encode(long)) == 0) {
-            return sqlite3_bind_int64(pStmt, idx, [obj longValue]);
-        }
-        else if (strcmp([obj objCType], @encode(unsigned long)) == 0) {
-            return sqlite3_bind_int64(pStmt, idx, (long long)[obj unsignedLongValue]);
-        }
-        else if (strcmp([obj objCType], @encode(long long)) == 0) {
-            return sqlite3_bind_int64(pStmt, idx, [obj longLongValue]);
-        }
-        else if (strcmp([obj objCType], @encode(unsigned long long)) == 0) {
-            return sqlite3_bind_int64(pStmt, idx, (long long)[obj unsignedLongLongValue]);
-        }
-        else if (strcmp([obj objCType], @encode(float)) == 0) {
-            return sqlite3_bind_double(pStmt, idx, [obj floatValue]);
-        }
-        else if (strcmp([obj objCType], @encode(double)) == 0) {
-            return sqlite3_bind_double(pStmt, idx, [obj doubleValue]);
-        }
-        else if (strcmp([obj objCType], @encode(BOOL)) == 0) {
-            return sqlite3_bind_int(pStmt, idx, ([obj boolValue] ? 1 : 0));
-        }
-        else {
-            return sqlite3_bind_text(pStmt, idx, [[obj description] UTF8String], -1, SQLITE_TRANSIENT);
-        }
-    }
-
-    return sqlite3_bind_text(pStmt, idx, [[obj description] UTF8String], -1, SQLITE_TRANSIENT);
-}
-
+/*
 - (void)extractSQL:(NSString *)sql argumentsList:(va_list)args intoString:(NSMutableString *)cleanedSQL arguments:(NSMutableArray *)arguments {
 
     NSUInteger length = [sql length];
@@ -1664,183 +1394,161 @@ NS_ASSUME_NONNULL_END
         last = current;
     }
 }
+*/
+    // MARK: Execute queries
 
-#pragma mark Execute queries
+    private func execute (query sql: String, arguments: [Any?]?,
+            dictionary: [String: Any?]?, shouldBind: Bool) throws -> FMResultSet {
 
-- (FMResultSet *)executeQuery:(NSString *)sql withParameterDictionary:(NSDictionary *)arguments {
-    return [self executeQuery:sql withArgumentsInArray:nil orDictionary:arguments orVAList:nil shouldBind:true];
-}
-
-- (FMResultSet *)executeQuery:(NSString *)sql withArgumentsInArray:(NSArray*)arrayArgs orDictionary:(NSDictionary *)dictionaryArgs orVAList:(va_list)args shouldBind:(BOOL)shouldBind {
-    if (![self databaseExists]) {
-        return 0x00;
-    }
-
-    if (_isExecutingStatement) {
-        [self warnInUse];
-        return 0x00;
-    }
-
-    _isExecutingStatement = YES;
-
-    int rc                  = 0x00;
-    sqlite3_stmt *pStmt     = 0x00;
-    FMStatement *statement  = 0x00;
-    FMResultSet *rs         = 0x00;
-
-    if (_traceExecution && sql) {
-        NSLog(@"%@ executeQuery: %@", self, sql);
-    }
-
-    if (_shouldCacheStatements) {
-        statement = [self cachedStatementForQuery:sql];
-        pStmt = statement ? [statement statement] : 0x00;
-        [statement reset];
-    }
-
-    if (!pStmt) {
-        rc = sqlite3_prepare_v2(_db, [sql UTF8String], -1, &pStmt, 0);
-
-        if (SQLITE_OK != rc) {
-            if (_logsErrors) {
-                NSLog(@"DB Error: %d \"%@\"", [self lastErrorCode], [self lastErrorMessage]);
-                NSLog(@"DB Query: %@", sql);
-                NSLog(@"DB Path: %@", _databasePath);
-            }
-
-            if (_crashOnErrors) {
-                NSAssert(false, @"DB Error: %d \"%@\"", [self lastErrorCode], [self lastErrorMessage]);
-                abort();
-            }
-
-            sqlite3_finalize(pStmt);
-            pStmt = 0x00;
-            _isExecutingStatement = NO;
-            return nil;
+        if !databaseExists {
+            throw SQLiteError.database(message: "Database does not exist")
         }
-    }
 
-    if (shouldBind) {
-        BOOL success = [self bindStatement:pStmt WithArgumentsInArray:arrayArgs orDictionary:dictionaryArgs orVAList:args];
-        if (!success) {
-            return nil;
+        if _isExecutingStatement {
+            warnInUse()
+            throw SQLiteError.database(message: "Database executing statement")
         }
-    }
 
-    FMDBRetain(statement); // to balance the release below
+        _isExecutingStatement = true
 
-    if (!statement) {
-        statement = [[FMStatement alloc] init];
-        [statement setStatement:pStmt];
+        var rc: Int32 = SQLITE_OK
 
-        if (_shouldCacheStatements && sql) {
-            [self setCachedStatement:statement forQuery:sql];
+        //FMResultSet *rs         = 0x00;
+
+        var pStmt: OpaquePointer? = nil
+
+        if traceExecution {
+            logger.trace("executeQuery: \(sql)")
         }
-    }
 
-    // the statement gets closed in rs's dealloc or [rs close];
-    // we should only autoclose if we're binding automatically when the statement is prepared
-    rs = [FMResultSet resultSetWithStatement:statement usingParentDatabase:self shouldAutoClose:shouldBind];
-    [rs setQuery:sql];
+        var statement: FMStatement! = nil
 
-    NSValue *openResultSet = [NSValue valueWithNonretainedObject:rs];
-    [_openResultSets addObject:openResultSet];
-
-    [statement setUseCount:[statement useCount] + 1];
-
-    FMDBRelease(statement);
-
-    _isExecutingStatement = NO;
-
-    return rs;
-}
-
-- (BOOL)bindStatement:(sqlite3_stmt *)pStmt WithArgumentsInArray:(NSArray*)arrayArgs orDictionary:(NSDictionary *)dictionaryArgs orVAList:(va_list)args {
-    id obj;
-    int idx = 0;
-    int queryCount = sqlite3_bind_parameter_count(pStmt); // pointed out by Dominic Yu (thanks!)
-
-    // If dictionaryArgs is passed in, that means we are using sqlite's named parameter support
-    if (dictionaryArgs) {
-
-        for (NSString *dictionaryKey in [dictionaryArgs allKeys]) {
-
-            // Prefix the key with a colon.
-            NSString *parameterName = [[NSString alloc] initWithFormat:@":%@", dictionaryKey];
-
-            if (_traceExecution) {
-                NSLog(@"%@ = %@", parameterName, [dictionaryArgs objectForKey:dictionaryKey]);
+        if shouldCacheStatements {
+            if let cachedStatement = cachedStatement(for: sql) {
+                pStmt = cachedStatement.statement
+                cachedStatement.reset()
+                statement = cachedStatement
             }
+        }
+        if pStmt == nil {
+            rc = sqlite3_prepare_v2(_db, sql, -1, &pStmt, nil)
 
-            // Get the index for the parameter name.
-            int namedIdx = sqlite3_bind_parameter_index(pStmt, [parameterName UTF8String]);
-
-            FMDBRelease(parameterName);
-
-            if (namedIdx > 0) {
-                // Standard binding from here.
-                int rc = [self bindObject:[dictionaryArgs objectForKey:dictionaryKey] toColumn:namedIdx inStatement:pStmt];
-                if (rc != SQLITE_OK) {
-                    NSLog(@"Error: unable to bind (%d, %s", rc, sqlite3_errmsg(_db));
-                    sqlite3_finalize(pStmt);
-                    pStmt = 0x00;
-                    _isExecutingStatement = NO;
-                    return false;
+            if rc != SQLITE_OK {
+                let message = "DB query error: \(lastErrorCode): \(lastErrorMessage ?? "Unknown error"), query \(sql)"
+                if logsErrors {
+                    logger.error("\(message)")
                 }
-                // increment the binding count, so our check below works out
-                idx++;
-            }
-            else {
-                NSLog(@"Could not find index for %@", dictionaryKey);
+
+                if crashOnErrors {
+                    abort()
+                }
+                sqlite3_finalize(pStmt)
+                _isExecutingStatement = false
+                throw SQLiteError.database(message: "DB query error: \(lastErrorCode): \(lastErrorMessage ?? "Unknown error")")
             }
         }
-    }
-    else {
-        while (idx < queryCount) {
-            if (arrayArgs && idx < (int)[arrayArgs count]) {
-                obj = [arrayArgs objectAtIndex:(NSUInteger)idx];
-            }
-            else if (args) {
-                obj = va_arg(args, id);
-            }
-            else {
-                //We ran out of arguments
-                break;
-            }
 
-            if (_traceExecution) {
-                if ([obj isKindOfClass:[NSData class]]) {
-                    NSLog(@"data: %ld bytes", (unsigned long)[(NSData*)obj length]);
+        if shouldBind {
+            try bind(statement: pStmt, arguments: arguments, dictionary: dictionary)
+        }
+
+        if statement == nil {
+            statement = FMStatement()
+            statement.statement = pStmt
+
+            if shouldCacheStatements {
+                cache(statement: statement, for: sql)
+            }
+        }
+
+        // the statement gets closed in rs's dealloc or [rs close];
+        // we should only autoclose if we're binding automatically when the statement is prepared
+        let rs = FMResultSet(statement: statement, parentDatabase: self, shouldAutoClose: shouldBind)
+        rs.query = sql
+
+        _openResultSets.append(Weak<FMResultSet>(value: rs))
+        statement.useCount += 1
+
+        _isExecutingStatement = false
+
+        return rs
+
+    }
+
+    private func bind (statement pStmt: OpaquePointer?, arguments: [Any?]? = nil, dictionary dictionaryArgs: [String: Any?]? = nil) throws {
+
+        //id obj;
+        var idx = 0
+
+        let queryCount = sqlite3_bind_parameter_count(pStmt) // pointed out by Dominic Yu (thanks!)
+
+        // If dictionaryArgs is passed in, that means we are using sqlite's named parameter Support
+        if let dictionaryArgs = dictionaryArgs {
+
+            for (key, arg) in dictionaryArgs {
+
+                // Prefix the key with a colon.
+                let parameterName = ":" + key
+
+                if traceExecution {
+                    logger.trace("\(parameterName) = \(key)")
+                }
+
+                // Get the index for the parameter name.
+                let namedIdx = sqlite3_bind_parameter_index(pStmt, parameterName)
+
+                if namedIdx > 0 {
+                    // Standard binding from here.
+                    let rc = bind(object: arg, to: namedIdx, in: pStmt)
+                    if rc != SQLITE_OK {
+                        sqlite3_finalize(pStmt)
+                        _isExecutingStatement = false
+                        throw SQLiteError.database(message: "Unable to bind (\(rc): \(lastErrorMessage ?? "unknown error")")
+                    }
+                    // increment the binding count, so our check below works out
+                    idx += 1
                 }
                 else {
-                    NSLog(@"obj: %@", obj);
+                    logger.warning("Could not find index for \(key)")
                 }
             }
+        }
+        else if let arguments = arguments {
+            var obj: Any?
+            while idx < queryCount {
+                if idx < arguments.count {
+                    obj = arguments[idx]
+                } else {
+                    //We ran out of arguments
+                    break
+                }
 
-            idx++;
+                if traceExecution {
+                    if let object = obj as?Data {
+                        logger.trace("data: \(object.count) bytes")
+                    } else {
+                        logger.trace("obj: \(String(describing: obj))")
+                    }
+                }
 
-            int rc = [self bindObject:obj toColumn:idx inStatement:pStmt];
-            if (rc != SQLITE_OK) {
-                NSLog(@"Error: unable to bind (%d, %s", rc, sqlite3_errmsg(_db));
-                sqlite3_finalize(pStmt);
-                pStmt = 0x00;
-                _isExecutingStatement = NO;
-                return false;
+                idx += 1
+
+                let rc = bind(object: obj, to: Int32(idx), in: pStmt)
+                if rc != SQLITE_OK {
+                    sqlite3_finalize(pStmt)
+                    _isExecutingStatement = false
+                    throw SQLiteError.database(message: "Unable to bind (\(rc), \(lastErrorMessage)")
+                }
             }
         }
+
+        if idx != queryCount {
+            sqlite3_finalize(pStmt)
+            _isExecutingStatement = false
+            throw SQLiteError.database(message: "Error: the bind count is not correct for the # of variables (executeQuery)")
+        }
     }
-
-    if (idx != queryCount) {
-        NSLog(@"Error: the bind count is not correct for the # of variables (executeQuery)");
-        sqlite3_finalize(pStmt);
-        pStmt = 0x00;
-        _isExecutingStatement = NO;
-        return false;
-    }
-
-    return true;
-}
-
+/*
 - (FMResultSet *)executeQuery:(NSString*)sql, ... {
     va_list args;
     va_start(args, sql);
@@ -1881,19 +1589,8 @@ NS_ASSUME_NONNULL_END
 }
 
 #pragma mark Execute updates
-
-- (BOOL)executeUpdate:(NSString*)sql error:(NSError * _Nullable __autoreleasing *)outErr withArgumentsInArray:(NSArray*)arrayArgs orDictionary:(NSDictionary *)dictionaryArgs orVAList:(va_list)args {
-    FMResultSet *rs = [self executeQuery:sql withArgumentsInArray:arrayArgs orDictionary:dictionaryArgs orVAList:args shouldBind:true];
-    if (!rs) {
-        if (outErr) {
-            *outErr = [self lastError];
-        }
-        return false;
-    }
-
-    return [rs internalStepWithError:outErr] == SQLITE_DONE;
-}
-
+*/
+/*
 - (BOOL)executeUpdate:(NSString*)sql, ... {
     va_list args;
     va_start(args, sql);

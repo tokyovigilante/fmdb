@@ -14,19 +14,19 @@
 public class FMStatement {
 
     /** Usage count */
-    private (set) public var useCount: Int64 = 0
+    internal (set) public var useCount: Int64 = 0
 
     /** SQL statement */
-    private (set) public var query: String = ""
+    internal (set) public var query: String = ""
 
     /** SQLite sqlite3_stmt
 
      @see [@c sqlite3_stmt ](https://sqlite.org/c3ref/stmt.html)
      */
-    private (set) public var statement: OpaquePointer? = nil
+    internal (set) public var statement: OpaquePointer? = nil
 
     /** Indication of whether the statement is in use */
-    private (set) public var inUse = false
+    internal (set) public var inUse = false
 
     public func reset () {
         sqlite3_reset(statement)
@@ -48,4 +48,15 @@ extension FMStatement: CustomStringConvertible {
     public var description: String {
         return ("\(useCount) hits for query \(query)")
     }
+}
+
+extension FMStatement: Hashable {
+
+    public func hash (into hasher: inout Hasher) {
+        ObjectIdentifier(self).hash(into: &hasher)
+    }
+}
+
+public func == (lhs: FMStatement, rhs: FMStatement) -> Bool {
+    return ObjectIdentifier(lhs) == ObjectIdentifier(rhs)
 }

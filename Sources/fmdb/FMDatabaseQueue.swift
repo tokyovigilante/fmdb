@@ -133,9 +133,9 @@ class FMDatabaseQueue {
     }
 
     /** Close database used by queue. */
-    public func close () {
-        _queue.sync {
-            _ = database?.close()
+    public func close () throws {
+        try _queue.sync {
+            _ = try database?.close()
         }
     }
 
@@ -314,7 +314,7 @@ class FMDatabaseQueue {
     }
 
     deinit {
-        close()
+        try? close()
     }
 
 }
