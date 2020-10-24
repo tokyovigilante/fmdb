@@ -408,7 +408,7 @@ public class FMDatabase {
 
     */
     public func execute (query sql: String, arguments: [Any?]? = nil, paramDict: [String: Any?]? = nil) throws -> FMResultSet {
-        throw SQLiteError.database(message: "Unimplemented")
+        return try execute(query: sql, arguments: arguments, dictionary: paramDict, shouldBind: true)
     }
 
     /// Prepare SQL statement.
@@ -1413,8 +1413,6 @@ typedef NS_ENUM(int, SqliteValueType) {
 
         var rc: Int32 = SQLITE_OK
 
-        //FMResultSet *rs         = 0x00;
-
         var pStmt: OpaquePointer? = nil
 
         if traceExecution {
@@ -1537,7 +1535,7 @@ typedef NS_ENUM(int, SqliteValueType) {
                 if rc != SQLITE_OK {
                     sqlite3_finalize(pStmt)
                     _isExecutingStatement = false
-                    throw SQLiteError.database(message: "Unable to bind (\(rc), \(lastErrorMessage)")
+                    throw SQLiteError.database(message: "Unable to bind (\(rc), \(lastErrorMessage ?? "unknown error")")
                 }
             }
         }
@@ -1549,15 +1547,6 @@ typedef NS_ENUM(int, SqliteValueType) {
         }
     }
 /*
-- (FMResultSet *)executeQuery:(NSString*)sql, ... {
-    va_list args;
-    va_start(args, sql);
-
-    id result = [self executeQuery:sql withArgumentsInArray:nil orDictionary:nil orVAList:args shouldBind:true];
-
-    va_end(args);
-    return result;
-}
 
 - (FMResultSet *)executeQueryWithFormat:(NSString*)format, ... {
     va_list args;
@@ -1572,64 +1561,6 @@ typedef NS_ENUM(int, SqliteValueType) {
     return [self executeQuery:sql withArgumentsInArray:arguments];
 }
 
-- (FMResultSet *)executeQuery:(NSString *)sql withArgumentsInArray:(NSArray *)arguments {
-    return [self executeQuery:sql withArgumentsInArray:arguments orDictionary:nil orVAList:nil shouldBind:true];
-}
-
-- (FMResultSet *)executeQuery:(NSString *)sql values:(NSArray *)values error:(NSError * __autoreleasing *)error {
-    FMResultSet *rs = [self executeQuery:sql withArgumentsInArray:values orDictionary:nil orVAList:nil shouldBind:true];
-    if (!rs && error) {
-        *error = [self lastError];
-    }
-    return rs;
-}
-
-- (FMResultSet *)executeQuery:(NSString*)sql withVAList:(va_list)args {
-    return [self executeQuery:sql withArgumentsInArray:nil orDictionary:nil orVAList:args shouldBind:true];
-}
-
-#pragma mark Execute updates
-*/
-/*
-- (BOOL)executeUpdate:(NSString*)sql, ... {
-    va_list args;
-    va_start(args, sql);
-
-    BOOL result = [self executeUpdate:sql error:nil withArgumentsInArray:nil orDictionary:nil orVAList:args];
-
-    va_end(args);
-    return result;
-}
-
-- (BOOL)executeUpdate:(NSString*)sql withArgumentsInArray:(NSArray *)arguments {
-    return [self executeUpdate:sql error:nil withArgumentsInArray:arguments orDictionary:nil orVAList:nil];
-}
-
-- (BOOL)executeUpdate:(NSString*)sql values:(NSArray *)values error:(NSError * __autoreleasing *)error {
-    return [self executeUpdate:sql error:error withArgumentsInArray:values orDictionary:nil orVAList:nil];
-}
-
-- (BOOL)executeUpdate:(NSString*)sql withParameterDictionary:(NSDictionary *)arguments {
-    return [self executeUpdate:sql error:nil withArgumentsInArray:nil orDictionary:arguments orVAList:nil];
-}
-
-- (BOOL)executeUpdate:(NSString*)sql withVAList:(va_list)args {
-    return [self executeUpdate:sql error:nil withArgumentsInArray:nil orDictionary:nil orVAList:args];
-}
-
-- (BOOL)executeUpdateWithFormat:(NSString*)format, ... {
-    va_list args;
-    va_start(args, format);
-
-    NSMutableString *sql      = [NSMutableString stringWithCapacity:[format length]];
-    NSMutableArray *arguments = [NSMutableArray array];
-
-    [self extractSQL:format argumentsList:args intoString:sql arguments:arguments];
-
-    va_end(args);
-
-    return [self executeUpdate:sql withArgumentsInArray:arguments];
-}
 
 
 int FMDBExecuteBulkSQLCallback(void *theBlockAsVoid, int columns, char **values, char **names); // shhh clang.
