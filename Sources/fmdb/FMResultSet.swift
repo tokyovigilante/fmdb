@@ -47,7 +47,7 @@ public class FMResultSet {
         statement.reset()
         parentDB = nil
     }
-/*
+
     ///---------------------------------------
     /// @name Iterating through the result set
     ///---------------------------------------
@@ -56,46 +56,33 @@ public class FMResultSet {
 
      You must always invoke `next` or `nextWithError` before attempting to access the values returned in a query, even if you're only expecting one.
 
-     @return @c YES if row successfully retrieved; @c NO if end of result set reached
+     @return if row successfully retrieved; throws SQLiteError.sqliteDone if end of result set reached
 
      @see hasAnotherRow
      */
+    public func next () throws {
+        do {
+            try stepInternal()
+        } catch SQLiteError.sqliteRow {
+            return
+        } catch {
+            throw error
+        }
+    }
 
-    - (BOOL)next;
-
-    /** Retrieve next row for result set.
-
-      You must always invoke `next` or `nextWithError` before attempting to access the values returned in a query, even if you're only expecting one.
-
-     @param outErr A 'NSError' object to receive any error object (if any).
-
-     @return 'YES' if row successfully retrieved; 'NO' if end of result set reached
-
-     @see hasAnotherRow
-     */
-
-    - (BOOL)nextWithError:(NSError * _Nullable __autoreleasing *)outErr;
-
-    /** Perform SQL statement.
-
-     @return 'YES' if successful; 'NO' if not.
-
-     @see hasAnotherRow
-    */
-
-    - (BOOL)step;
-*/
     /** Perform SQL statement.
 
      @param outErr A 'NSError' object to receive any error object (if any).
 
-     @return 'YES' if successful; 'NO' if not.
+     @return if success; throws SQLiteError.sqliteRow if another row present
 
      @see hasAnotherRow
     */
     public func step () throws {
         do {
             try stepInternal()
+        } catch SQLiteError.sqliteDone {
+            return
         } catch {
             throw error
         }
@@ -117,7 +104,7 @@ public class FMResultSet {
             case SQLITE_ROW:
                 throw SQLiteError.sqliteRow // Not an error but can be detected if required by calling function
             case SQLITE_DONE:
-                return
+                throw SQLiteError.sqliteDone // Not an error but can be detected if required by calling function
             case SQLITE_ERROR, SQLITE_MISUSE:
                 if let parentDB = parentDB {
                     let message = String(cString: sqlite3_errmsg(parentDB.sqliteHandle), encoding: .utf8)
@@ -178,7 +165,7 @@ public class FMResultSet {
      */
 
     - (int)intForColumn:(NSString*)columnName;
-
+*/
     /** Result set integer value for column.
 
      @param columnIdx Zero-based index for column.
@@ -186,8 +173,10 @@ public class FMResultSet {
      @return @c int  value of the result set's column.
      */
 
-    - (int)intForColumnIndex:(int)columnIdx;
-
+    public func int (columnIndex i: Int) -> Int32 {
+        return sqlite3_column_int(statement.statement, Int32(i))
+    }
+/*
     /** Result set @c long  value for column.
 
      @param columnName @c NSString  value of the name of the column.
@@ -651,16 +640,6 @@ public class FMResultSet {
         return nil;
     }
 
-    - (BOOL)next {
-        return [self nextWithError:nil];
-    }
-
-    - (BOOL)nextWithError:(NSError * _Nullable __autoreleasing *)outErr {
-        int rc = [self internalStepWithError:outErr];
-        return rc == SQLITE_ROW;
-    }
-
-
 
 
     - (BOOL)hasAnotherRow {
@@ -685,9 +664,7 @@ public class FMResultSet {
         return [self intForColumnIndex:[self columnIndexForName:columnName]];
     }
 
-    - (int)intForColumnIndex:(int)columnIdx {
-        return sqlite3_column_int([_statement statement], columnIdx);
-    }
+
 
     - (long)longForColumn:(NSString*)columnName {
         return [self longForColumnIndex:[self columnIndexForName:columnName]];
