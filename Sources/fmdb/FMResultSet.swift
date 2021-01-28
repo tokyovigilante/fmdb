@@ -19,13 +19,24 @@ public class FMResultSet {
     /** Executed query */
     internal (set) public var query: String = ""
 
-    /** `NSMutableDictionary` mapping column names to numeric index */
-    private (set) var columnNameToIndexMap = [String: Int]()
-
     /** `FMStatement` used by result set. */
     let statement: FMStatement
 
     let shouldAutoClose: Bool
+
+    /** `NSMutableDictionary` mapping column names to numeric index */
+    lazy var columnNameToIndexMap: [String: Int] = { () -> [String: Int] in
+        let count = sqlite3_column_count(statement.statement)
+        var map: [String: Int] = [:]
+
+        for i in 0..<count {
+            guard let name = String(cString: sqlite3_column_name(statement.statement, i), encoding: .utf8) else {
+                continue
+            }
+            map[name] = Int(i)
+        }
+        return map
+    }()
 
     ///------------------------------------
     /// @name Creating and closing a result set
@@ -145,8 +156,17 @@ public class FMResultSet {
 
      @return Zero-based index for column.
      */
+*/
+    public func columnIndex (for name: String) -> Int {
 
-    - (int)columnIndexForName:(NSString*)columnName;
+        let name = name.lowercased()
+
+        if let index = columnNameToIndexMap[name] {
+            return index
+        }
+        Log.warning("No column named \(name) found")
+        return -1
+    }
 
     /** Column name for column index
 
@@ -154,7 +174,7 @@ public class FMResultSet {
 
      @return columnName @c NSString  value of the name of the column.
      */
-
+/*
     - (NSString * _Nullable)columnNameForIndex:(int)columnIdx;
 
     /** Result set integer value for column.
@@ -276,8 +296,24 @@ public class FMResultSet {
      @return String value of the result set's column.
 
      */
+    */
+    public func string (column name: String) -> String? {
+        return string(column: columnIndex(for: name))
 
-    - (NSString * _Nullable)stringForColumn:(NSString*)columnName;
+    }
+
+    public func string (column index: Int) -> String? {
+
+        if sqlite3_column_type(statement.statement, Int32(index)) == SQLITE_NULL ||
+                index < 0 ||
+                index >= sqlite3_column_count(statement.statement) {
+            return nil
+        }
+        guard let c = sqlite3_column_text(statement.statement, Int32(index)) else {
+            return nil
+        }
+        return String(cString: c)
+    }
 
     /** Result set @c NSString  value for column.
 
@@ -285,7 +321,7 @@ public class FMResultSet {
 
      @return String value of the result set's column.
      */
-
+    /*
     - (NSString * _Nullable)stringForColumnIndex:(int)columnIdx;
 
     /** Result set @c NSDate  value for column.
@@ -335,9 +371,6 @@ public class FMResultSet {
      @return `(const unsigned char *)` value of the result set's column.
      */
 
-    - (const unsigned char * _Nullable)UTF8StringForColumn:(NSString*)columnName;
-
-    - (const unsigned char * _Nullable)UTF8StringForColumnName:(NSString*)columnName __deprecated_msg("Use UTF8StringForColumn instead");
 
     /** Result set `(const unsigned char *)` value for column.
 
@@ -540,11 +573,6 @@ public class FMResultSet {
     - (BOOL)bindStatement:(sqlite3_stmt *)pStmt WithArgumentsInArray:(NSArray*)arrayArgs orDictionary:(NSDictionary *)dictionaryArgs orVAList:(va_list)args;
     @end
 
-    // MARK: - FMResultSet Private Extension
-
-    @interface FMResultSet () {
-        NSMutableDictionary *_columnNameToIndexMap;
-    }
 
 
     // MARK: - FMResultSet
@@ -555,18 +583,6 @@ public class FMResultSet {
         return sqlite3_column_count([_statement statement]);
     }
 
-    - (NSMutableDictionary *)columnNameToIndexMap {
-        if (!_columnNameToIndexMap) {
-            int columnCount = sqlite3_column_count([_statement statement]);
-            _columnNameToIndexMap = [[NSMutableDictionary alloc] initWithCapacity:(NSUInteger)columnCount];
-            int columnIdx = 0;
-            for (columnIdx = 0; columnIdx < columnCount; columnIdx++) {
-                [_columnNameToIndexMap setObject:[NSNumber numberWithInt:columnIdx]
-                                          forKey:[[NSString stringWithUTF8String:sqlite3_column_name([_statement statement], columnIdx)] lowercaseString]];
-            }
-        }
-        return _columnNameToIndexMap;
-    }
 
     - (void)kvcMagic:(id)object {
 
@@ -646,19 +662,6 @@ public class FMResultSet {
         return sqlite3_errcode([_parentDB sqliteHandle]) == SQLITE_ROW;
     }
 
-    - (int)columnIndexForName:(NSString*)columnName {
-        columnName = [columnName lowercaseString];
-
-        NSNumber *n = [[self columnNameToIndexMap] objectForKey:columnName];
-
-        if (n != nil) {
-            return [n intValue];
-        }
-
-        NSLog(@"Warning: I could not find the column named '%@'.", columnName);
-
-        return -1;
-    }
 
     - (int)intForColumn:(NSString*)columnName {
         return [self intForColumnIndex:[self columnIndexForName:columnName]];
@@ -706,25 +709,6 @@ public class FMResultSet {
         return sqlite3_column_double([_statement statement], columnIdx);
     }
 
-    - (NSString *)stringForColumnIndex:(int)columnIdx {
-
-        if (sqlite3_column_type([_statement statement], columnIdx) == SQLITE_NULL || (columnIdx < 0) || columnIdx >= sqlite3_column_count([_statement statement])) {
-            return nil;
-        }
-
-        const char *c = (const char *)sqlite3_column_text([_statement statement], columnIdx);
-
-        if (!c) {
-            // null row.
-            return nil;
-        }
-
-        return [NSString stringWithUTF8String:c];
-    }
-
-    - (NSString*)stringForColumn:(NSString*)columnName {
-        return [self stringForColumnIndex:[self columnIndexForName:columnName]];
-    }
 
     - (NSDate*)dateForColumn:(NSString*)columnName {
         return [self dateForColumnIndex:[self columnIndexForName:columnName]];
