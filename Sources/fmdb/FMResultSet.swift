@@ -1,5 +1,6 @@
 import CSQLite
 import Foundation
+import Logging
 
 /** Represents the results of executing a query on an @c FMDatabase .
 
@@ -164,7 +165,7 @@ public class FMResultSet {
         if let index = columnNameToIndexMap[name] {
             return index
         }
-        Log.warning("No column named \(name) found")
+        logger.warning("No column named \(name) found")
         return -1
     }
 

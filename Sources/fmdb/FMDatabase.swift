@@ -1244,6 +1244,10 @@ typedef NS_ENUM(int, SqliteValueType) {
             } else {
                 return sqlite3_bind_double(pStmt, idx, date.timeIntervalSince1970)
             }
+        case let number as Int:
+            return sqlite3_bind_int64(pStmt, idx, Int64(number))
+        case let number as UInt:
+            return sqlite3_bind_int64(pStmt, idx, Int64(number))
         case let number as Int8:
             return sqlite3_bind_int(pStmt, idx, Int32(number))
         case let number as UInt8:
@@ -1268,6 +1272,10 @@ typedef NS_ENUM(int, SqliteValueType) {
             return sqlite3_bind_int(pStmt, idx, number ? 1 : 0)
         case let string as String:
             return sqlite3_bind_text(pStmt, idx, string, -1, SQLITE_TRANSIENT)
+        case let url as URL:
+            return sqlite3_bind_text(pStmt, idx, url.absoluteString, -1, SQLITE_TRANSIENT)
+        case let uuid as UUID:
+            return sqlite3_bind_text(pStmt, idx, uuid.uuidString, -1, SQLITE_TRANSIENT)
         default:
             logger.warning("Unknown object \(String(describing: object))")
         }
