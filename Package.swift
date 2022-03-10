@@ -21,10 +21,6 @@ let package = Package(
                 "CSQLite",
                 .product(name: "Logging", package: "swift-log")
             ],
-            path: "Sources/fmdb",
-            swiftSettings: [
-                .unsafeFlags(["-warnings-as-errors"])
-            ])
-
+            path: "Sources/fmdb")
         ]
 )
