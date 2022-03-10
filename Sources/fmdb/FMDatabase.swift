@@ -197,12 +197,16 @@ public class FMDatabase {
                 logger.warning("\(error.localizedDescription)")
             }
         }
-
-        let err = sqlite3_open_v2(databaseURL?.absoluteString, &_db, flags, vfs)
+        let dbPointer = UnsafeMutablePointer<OpaquePointer?>.allocate(capacity: 1)
+        defer {
+            dbPointer.deallocate()
+        }
+        let err = sqlite3_open_v2(databaseURL!.absoluteString, dbPointer, flags, vfs)
         if err != SQLITE_OK {
             logger.error("error opening!: \(err)")
             return false
         }
+        _db = dbPointer.pointee
 
         if maxBusyRetryTimeInterval > 0 {
             // set the handler
