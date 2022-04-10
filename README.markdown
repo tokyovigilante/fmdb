@@ -1,9 +1,6 @@
 # FMDB v2.7
-<!--[![Platform](https://img.shields.io/cocoapods/p/FMDB.svg?style=flat)](http://cocoadocs.org/docsets/Alamofire)-->
-[![CocoaPods Compatible](https://img.shields.io/cocoapods/v/FMDB.svg)](https://img.shields.io/cocoapods/v/FMDB.svg)
-[![Carthage Compatible](https://img.shields.io/badge/Carthage-compatible-4BC51D.svg?style=flat)](https://github.com/Carthage/Carthage)
 
-This is an Objective-C wrapper around [SQLite](https://sqlite.org/).
+This is an Swift wrapper around [SQLite](https://sqlite.org/).
 
 ## The FMDB Mailing List:
 https://groups.google.com/group/fmdb
@@ -77,8 +74,8 @@ Declare FMDB as a package dependency.
 ```swift
 .package(
     name: "FMDB", 
-    url: "https://github.com/ccgus/fmdb", 
-    .upToNextMinor(from: "2.7.7")),
+    url: "https://github.com/tokyovigilante/fmdb",
+    .branch("main")),
 ```
 
 Use FMDB in target dependencies
@@ -89,8 +86,11 @@ Use FMDB in target dependencies
 ## FMDB Class Reference:
 https://ccgus.github.io/fmdb/html/index.html
 
-## Automatic Reference Counting (ARC) or Manual Memory Management?
-You can use either style in your Cocoa project.  FMDB will figure out which you are using at compile time and do the right thing.
+## Native Swift Port
+
+This is a partially-complete port of FMDB to Swift. General database usage, query and statement execution is present, but there are gaps (typed access, save points) which should be fairly straightforward to implement. The functionality is generally 1:1 from Obj-C, although throwing errors is preferred, particularly where a boolean success value or void is returned from the underlying SQLite API.
+
+The nullability and optional notes below refer to the Obj-C version and are retained for reference, but no longer entirely accurate.
 
 ## What's New in FMDB 2.7
 
