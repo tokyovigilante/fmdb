@@ -98,10 +98,10 @@ FMDatabase *db = [[FMDatabase alloc] initWithURL:fileURL];
 */
 public class FMDatabase {
 
-    // MARK: - FMDatabase Private Extension
-    private var _db: OpaquePointer? = nil
+    private (set) internal var _db: OpaquePointer? = nil
 
     private var _isExecutingStatement = false
+
     fileprivate var _startBusyRetryTime: TimeInterval = 0
     private var _openResultSets = [Weak<FMResultSet>]()
     //private var _openFunctions = Set()
@@ -657,15 +657,6 @@ public class FMDatabase {
 
      /** The file URL of the database file. */
     public let databaseURL: URL?
-
-    /** The underlying SQLite handle .
-
-     @return The `sqlite3` pointer.
-
-    */
-    public var sqliteHandle: OpaquePointer? {
-        return _db
-    }
 
 
     ///-----------------------------

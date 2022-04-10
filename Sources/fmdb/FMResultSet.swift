@@ -119,7 +119,7 @@ public class FMResultSet {
                 throw SQLiteError.sqliteDone // Not an error but can be detected if required by calling function
             case SQLITE_ERROR, SQLITE_MISUSE:
                 if let parentDB = parentDB {
-                    let message = String(cString: sqlite3_errmsg(parentDB.sqliteHandle), encoding: .utf8)
+                    let message = String(cString: sqlite3_errmsg(parentDB._db), encoding: .utf8)
                     throw SQLiteError.database(message: "FMResultSet: sqlite3_step() failed: \(rc) - \(String(describing: message))")
                 } else {
                     throw SQLiteError.database(message: "FMResultSet: sqlite3_step() failed, error \(rc), parentDB does not exist")
