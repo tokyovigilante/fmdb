@@ -132,6 +132,16 @@ public class FMDatabase {
 
     private (set) public var cachedStatements = [String: Set<FMStatement>]()
 
+
+    /** Identify whether currently in a transaction or not
+
+    @see beginTransaction
+    @see beginDeferredTransaction
+    @see commit
+    @see rollback
+    */
+    private (set) public var inTransaction: Bool = false
+
     public init (url: URL?) {
         assert(sqlite3_threadsafe() != 0, "SQLite is not threadsafe, aborting")
         databaseURL = url
@@ -434,18 +444,10 @@ public class FMDatabase {
     @see rollback
     @see beginDeferredTransaction
     @see isInTransaction
-
-    @warning    Unlike SQLite's `BEGIN TRANSACTION`, this method currently performs
-             an exclusive transaction, not a deferred transaction. This behavior
-             is likely to change in future versions of FMDB, whereby this method
-             will likely eventually adopt standard SQLite behavior and perform
-             deferred transactions. If you really need exclusive tranaction, it is
-             recommended that you use @c beginExclusiveTransaction, instead, not
-             only to make your intent explicit, but also to future-proof your code.
-
     */
     public func beginTransaction () throws {
-
+        try execute(update: "BEGIN TRANSACTION")
+        inTransaction = true
     }
 
     /** Begin a deferred transaction
@@ -458,7 +460,8 @@ public class FMDatabase {
     @see isInTransaction
     */
     public func beginDeferredTransaction () throws {
-
+        try execute(update: "BEGIN DEFERRED TRANSACTION")
+        inTransaction = true
     }
 
     /** Begin an immediate transaction
@@ -471,7 +474,10 @@ public class FMDatabase {
     @see isInTransaction
     */
 
-    public func beginImmediateTransaction () throws {}
+    public func beginImmediateTransaction () throws {
+        try execute(update: "BEGIN IMMEDIATE TRANSACTION")
+        inTransaction = true
+    }
 
     /** Begin an exclusive transaction
 
@@ -482,7 +488,10 @@ public class FMDatabase {
     @see beginTransaction
     @see isInTransaction
     */
-    public func beginExclusiveTransaction () throws {}
+    public func beginExclusiveTransaction () throws {
+        try execute(update: "BEGIN EXCLUSIVE TRANSACTION")
+        inTransaction = true
+    }
 
     /** Commit a transaction
 
@@ -495,7 +504,9 @@ public class FMDatabase {
     @see rollback
     @see isInTransaction
     */
-    public func commit () throws {}
+    public func commit () throws {
+        try execute(update: "COMMIT TRANSACTION")
+    }
 
     /** Rollback a transaction
 
@@ -508,7 +519,10 @@ public class FMDatabase {
     @see commit
     @see isInTransaction
     */
-    public func rollback () throws {}
+    public func rollback () throws {
+        try execute(update: "ROLLBACK TRANSACTION")
+        inTransaction = false
+    }
 
     /** Identify whether currently in a transaction or not
 
@@ -1649,80 +1663,6 @@ int FMDBExecuteBulkSQLCallback(void *theBlockAsVoid, int columns, char **values,
     return [self executeQuery:sql withArgumentsInArray:nil orDictionary:nil orVAList:nil shouldBind:false];
 }
 
-#pragma mark Transactions
-
-- (BOOL)rollback {
-    BOOL b = [self executeUpdate:@"rollback transaction"];
-
-    if (b) {
-        _isInTransaction = NO;
-    }
-
-    return b;
-}
-
-- (BOOL)commit {
-    BOOL b =  [self executeUpdate:@"commit transaction"];
-
-    if (b) {
-        _isInTransaction = NO;
-    }
-
-    return b;
-}
-
-- (BOOL)beginTransaction {
-
-    BOOL b = [self executeUpdate:@"begin exclusive transaction"];
-    if (b) {
-        _isInTransaction = YES;
-    }
-
-    return b;
-}
-
-- (BOOL)beginDeferredTransaction {
-
-    BOOL b = [self executeUpdate:@"begin deferred transaction"];
-    if (b) {
-        _isInTransaction = YES;
-    }
-
-    return b;
-}
-
-- (BOOL)beginImmediateTransaction {
-
-    BOOL b = [self executeUpdate:@"begin immediate transaction"];
-    if (b) {
-        _isInTransaction = YES;
-    }
-
-    return b;
-}
-
-- (BOOL)beginExclusiveTransaction {
-
-    BOOL b = [self executeUpdate:@"begin exclusive transaction"];
-    if (b) {
-        _isInTransaction = YES;
-    }
-
-    return b;
-}
-
-- (BOOL)inTransaction {
-    return _isInTransaction;
-}
-
-- (BOOL)interrupt
-{
-    if (_db) {
-        sqlite3_interrupt([self sqliteHandle]);
-        return YES;
-    }
-    return NO;
-}
 
 static NSString *FMDBEscapeSavePointName(NSString *savepointName) {
     return [savepointName stringByReplacingOccurrencesOfString:@"'" withString:@"''"];
