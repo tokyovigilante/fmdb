@@ -93,7 +93,7 @@ public class FMResultSet {
     public func step () throws {
         do {
             try stepInternal()
-        } catch SQLiteError.sqliteDone {
+        } catch SQLiteError.sqliteRow {
             return
         } catch {
             throw error
