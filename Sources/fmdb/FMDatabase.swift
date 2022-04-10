@@ -600,7 +600,12 @@ public class FMDatabase {
     @return @c YES on success; @c NO on failure. If failed, you can call @c lastError , @c lastErrorCode , or @c lastErrorMessage  for diagnostic information regarding the failure.
 
     */
-    public func interrupt () throws {}
+    public func interrupt () throws {
+        if _db == nil {
+            throw SQLiteError.database(message: "interrupt called without open DB")
+        }
+        sqlite3_interrupt(_db)
+    }
 
     ///-------------------------
     /// @name Encryption methods
