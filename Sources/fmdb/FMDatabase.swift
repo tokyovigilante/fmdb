@@ -422,7 +422,7 @@ public class FMDatabase {
     @see [`FMResultSet next`](<[FMResultSet next]>)
 
     */
-    public func execute (query sql: String, arguments: [Any?]? = nil, paramDict: [String: Any?]? = nil) throws -> FMResultSet {
+    public func execute (query sql: String, arguments: [Any?]? = nil, dictionary paramDict: [String: Any?]? = nil) throws -> FMResultSet {
         return try execute(query: sql, arguments: arguments, dictionary: paramDict, shouldBind: true)
     }
 
