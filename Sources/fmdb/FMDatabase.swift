@@ -142,6 +142,8 @@ public class FMDatabase {
     */
     private (set) public var inTransaction: Bool = false
 
+    private (set) public var isOpen: Bool = false
+
     public init (url: URL?) {
         assert(sqlite3_threadsafe() != 0, "SQLite is not threadsafe, aborting")
         databaseURL = url
@@ -152,7 +154,6 @@ public class FMDatabase {
     ///-----------------------------------
 
     /// Is the database open or not?
-    private (set) public var isOpen = false
 
     /** Opening a new database connection with flags and an optional virtual file system (VFS)
 
