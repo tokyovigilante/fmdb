@@ -175,8 +175,12 @@ public class FMResultSet {
 
      @return columnName @c NSString  value of the name of the column.
      */
-/*
-    - (NSString * _Nullable)columnNameForIndex:(int)columnIdx;
+     public func columnName (for index: Int) -> String? {
+        if let name = sqlite3_column_name(statement.statement, Int32(index)) {
+            return String(cString: name)
+        }
+        return nil
+     }
 
     /** Result set integer value for column.
 
@@ -184,9 +188,10 @@ public class FMResultSet {
 
      @return @c int  value of the result set's column.
      */
+    public func int (column: String) -> Int32 {
+        return int(columnIndex: columnIndex(for: column))
+    }
 
-    - (int)intForColumn:(NSString*)columnName;
-*/
     /** Result set integer value for column.
 
      @param columnIdx Zero-based index for column.
@@ -664,9 +669,7 @@ public class FMResultSet {
     }
 
 
-    - (int)intForColumn:(NSString*)columnName {
-        return [self intForColumnIndex:[self columnIndexForName:columnName]];
-    }
+
 
 
 
@@ -828,10 +831,7 @@ public class FMResultSet {
         return [self objectForColumnIndex:[self columnIndexForName:columnName]];
     }
 
-    // returns autoreleased NSString containing the name of the column in the result set
-    - (NSString*)columnNameForIndex:(int)columnIdx {
-        return [NSString stringWithUTF8String: sqlite3_column_name([_statement statement], columnIdx)];
-    }
+
 
     - (id)objectAtIndexedSubscript:(int)columnIdx {
         return [self objectForColumnIndex:columnIdx];
