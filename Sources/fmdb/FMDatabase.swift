@@ -433,7 +433,7 @@ public class FMDatabase {
     ///
     /// @param sql SQL statement to prepare, generally with `?` placeholders.
     public func prepare (sql: String) throws -> FMResultSet {
-        throw SQLiteError.database(message: "Unimplemented")
+        return try execute(query: sql)
     }
 
     ///-------------------
