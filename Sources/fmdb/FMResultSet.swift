@@ -68,39 +68,27 @@ public class FMResultSet {
 
      You must always invoke `next` or `nextWithError` before attempting to access the values returned in a query, even if you're only expecting one.
 
-     @return if row successfully retrieved; throws SQLiteError.sqliteDone if end of result set reached
+     @returns true if row successfully retrieved; false if end of result set reached
 
      @see hasAnotherRow
      */
-    public func next () throws {
-        do {
-            try stepInternal()
-        } catch SQLiteError.sqliteRow {
-            return
-        } catch {
-            throw error
-        }
+    public func next () throws -> Bool {
+        return try stepInternal() == SQLITE_ROW
     }
 
     /** Perform SQL statement.
 
      @param outErr A 'NSError' object to receive any error object (if any).
 
-     @return if success; throws SQLiteError.sqliteRow if another row present
+     @returns true if perfomed successfully, throws on Error
 
      @see hasAnotherRow
     */
-    public func step () throws {
-        do {
-            try stepInternal()
-        } catch SQLiteError.sqliteRow {
-            return
-        } catch {
-            throw error
-        }
+    public func step () throws -> Bool {
+        return try stepInternal() == SQLITE_DONE
     }
 
-    internal func stepInternal () throws {
+    internal func stepInternal () throws -> Int32 {
 
         let rc = sqlite3_step(statement.statement)
 
@@ -111,21 +99,28 @@ public class FMResultSet {
         }
 
         switch rc {
+            case SQLITE_ROW, SQLITE_DONE:
+                return rc
             case SQLITE_BUSY, SQLITE_LOCKED:
                 throw SQLiteError.database(message: "SQLite database busy or locked during FMRResultSet step")
-            case SQLITE_ROW:
-                throw SQLiteError.sqliteRow // Not an error but can be detected if required by calling function
-            case SQLITE_DONE:
-                throw SQLiteError.sqliteDone // Not an error but can be detected if required by calling function
-            case SQLITE_ERROR, SQLITE_MISUSE:
+            case SQLITE_CONSTRAINT:
+            if let parentDB = parentDB {
+                let message = String(cString: sqlite3_errmsg(parentDB._db))
+                throw SQLiteError.constraint(message: "FMResultSet: sqlite3_step() failed: \(rc) - \(message))")
+            } else {
+                throw SQLiteError.constraint(message: "FMResultSet: sqlite3_step() failed, error \(rc), parentDB does not exist")
+            }
+            default:// SQLITE_ERROR, SQLITE_MISUSE:
                 if let parentDB = parentDB {
-                    let message = String(cString: sqlite3_errmsg(parentDB._db), encoding: .utf8)
-                    throw SQLiteError.database(message: "FMResultSet: sqlite3_step() failed: \(rc) - \(String(describing: message))")
+                    let message = String(cString: sqlite3_errmsg(parentDB._db))
+                    throw SQLiteError.database(message: "FMResultSet: sqlite3_step() failed: \(rc) - \(message))")
                 } else {
                     throw SQLiteError.database(message: "FMResultSet: sqlite3_step() failed, error \(rc), parentDB does not exist")
                 }
-            default:
-                throw SQLiteError.database(message: "FMResultSet: sqlite3_step() failed")
+            /*default:
+                let extendedError = sqlite3_extended_errcode(parentDB._db)
+                let message = String(cString: sqlite3_errmsg(parentDB._db))
+                throw SQLiteError.database(message: "FMResultSet: sqlite3_step() failed, error \(rc), extended \(extendedError): \(message)")*/
         }
     }
 /*

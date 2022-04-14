@@ -334,7 +334,10 @@ public class FMDatabase {
     */
     public func execute (update sql: String, arguments: [Any?]? = nil, dictionary paramDict: [String: Any?]? = nil) throws {
         let rs = try execute(query: sql, arguments: arguments, dictionary: paramDict, shouldBind: true)
-        try rs.stepInternal()
+        let rc = try rs.stepInternal()
+        if rc != SQLITE_DONE {
+            throw SQLiteError.database(message: "Unexpected return \(rc) executing \(sql)")
+        }
     }
 
     /** Execute multiple SQL statements
