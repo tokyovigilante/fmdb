@@ -269,7 +269,7 @@ public class FMResultSet {
      */
 
     - (BOOL)boolForColumnIndex:(int)columnIdx;
-
+*/
     /** Result set `double` value for column.
 
      @param columnName @c NSString  value of the name of the column.
@@ -277,8 +277,9 @@ public class FMResultSet {
      @return `double` value of the result set's column.
 
      */
-
-    - (double)doubleForColumn:(NSString*)columnName;
+    public func double(column name: String) -> Double {
+        return double(columnIndex: columnIndex(for: name))
+    }
 
     /** Result set `double` value for column.
 
@@ -287,8 +288,9 @@ public class FMResultSet {
      @return `double` value of the result set's column.
 
      */
-
-    - (double)doubleForColumnIndex:(int)columnIdx;
+    public func double(columnIndex i: Int) -> Double {
+        return sqlite3_column_double(statement.statement, Int32(i))
+    }
 
     /** Result set @c NSString  value for column.
 
@@ -297,17 +299,16 @@ public class FMResultSet {
      @return String value of the result set's column.
 
      */
-    */
-    public func string (column name: String) -> String? {
-        return string(column: columnIndex(for: name))
 
+    public func string(column name: String) -> String? {
+        return string(column: columnIndex(for: name))
     }
 
-    public func string (column index: Int) -> String? {
+    public func string(column index: Int) -> String? {
 
-        if sqlite3_column_type(statement.statement, Int32(index)) == SQLITE_NULL ||
-                index < 0 ||
-                index >= sqlite3_column_count(statement.statement) {
+        if sqlite3_column_type(statement.statement, Int32(index)) == SQLITE_NULL || index < 0
+            || index >= sqlite3_column_count(statement.statement)
+        {
             return nil
         }
         guard let c = sqlite3_column_text(statement.statement, Int32(index)) else {
@@ -699,15 +700,6 @@ public class FMResultSet {
     - (BOOL)boolForColumnIndex:(int)columnIdx {
         return ([self intForColumnIndex:columnIdx] != 0);
     }
-
-    - (double)doubleForColumn:(NSString*)columnName {
-        return [self doubleForColumnIndex:[self columnIndexForName:columnName]];
-    }
-
-    - (double)doubleForColumnIndex:(int)columnIdx {
-        return sqlite3_column_double([_statement statement], columnIdx);
-    }
-
 
     - (NSDate*)dateForColumn:(NSString*)columnName {
         return [self dateForColumnIndex:[self columnIndexForName:columnName]];
